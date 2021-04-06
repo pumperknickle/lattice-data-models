@@ -1,0 +1,52 @@
+{
+  "object": {
+    "pins": [
+      {
+        "package": "AwesomeDictionary",
+        "repositoryURL": "https://github.com/pumperknickle/AwesomeDictionary.git",
+        "state": {
+          "branch": null,
+          "revision": "5a6c7d2ddeca66dbb87b88d92735f281b4b383cd",
+          "version": "0.1.0"
+        }
+      },
+      {
+        "package": "AwesomeTrie",
+        "repositoryURL": "https://github.com/pumperknickle/AwesomeTrie.git",
+        "state": {
+          "branch": null,
+          "revision": "cce9a3d9eb675943b4b777b85da965c7d166b01c",
+          "version": "0.1.5"
+        }
+      },
+      {
+        "package": "Bedrock",
+        "repositoryURL": "https://github.com/pumperknickle/Bedrock.git",
+        "state": {
+          "branch": null,
+          "revision": "6112a641374616f1fe721ceb2762054e2f6ccfed",
+          "version": "0.2.1"
+        }
+      },
+      {
+        "package": "Nimble",
+        "repositoryURL": "https://github.com/Quick/Nimble.git",
+        "state": {
+          "branch": null,
+          "revision": "7a46a5fc86cb917f69e3daf79fcb045283d8f008",
+          "version": "8.1.2"
+        }
+      },
+      {
+        "package": "Quick",
+        "repositoryURL": "https://github.com/Quick/Quick.git",
+        "state": {
+          "branch": null,
+          "revision": "09b3becb37cb2163919a3842a4c5fa6ec7130792",
+          "version": "2.2.1"
+        }
+      }
+    ]
+  },
+  "version": 1
+}
