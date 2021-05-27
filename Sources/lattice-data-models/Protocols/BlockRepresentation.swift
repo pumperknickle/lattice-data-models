@@ -11,12 +11,12 @@ public protocol BlockRepresentation: Codable {
     associatedtype ChainName: Stringable
 
     var blockHash: Digest { get }
-    var blockNumber: Number { get }
+    var nextDifficulty: Digest { get }
     var directParents: [Digest] { get }
     var parentBlockNumbers: Mapping<Digest, Number> { get }
     var childBlockConfirmations: Mapping<ChainName, Digest> { get }
     
-    init(blockHash: Digest, blockNumber: Number, directParents: [Digest], parentBlockNumbers: Mapping<Digest, Number>, childBlockConfirmations: Mapping<ChainName, Digest>)
+    init(blockHash: Digest, nextDiffiiculty: Digest, directParents: [Digest], parentBlockNumbers: Mapping<Digest, Number>, childBlockConfirmations: Mapping<ChainName, Digest>)
 }
 
 public extension BlockRepresentation {
@@ -34,8 +34,8 @@ public extension BlockRepresentation {
     }
     
     func addParent(hash: Digest, parentBlockNumber: Number, prefix: [Digest], suffix: [Digest]) -> Self {
-        guard let comparableBlock = suffix.first else { return Self(blockHash: blockHash, blockNumber: blockNumber, directParents: prefix + [hash], parentBlockNumbers: parentBlockNumbers.setting(key: hash, value: parentBlockNumber), childBlockConfirmations: childBlockConfirmations) }
-        if parentBlockNumber < parentBlockNumbers[comparableBlock]! { return Self(blockHash: blockHash, blockNumber: blockNumber, directParents: prefix + [hash] + suffix, parentBlockNumbers: parentBlockNumbers.setting(key: hash, value: parentBlockNumber), childBlockConfirmations: childBlockConfirmations) }
+        guard let comparableBlock = suffix.first else { return Self(blockHash: blockHash, nextDiffiiculty: nextDifficulty, directParents: prefix + [hash], parentBlockNumbers: parentBlockNumbers.setting(key: hash, value: parentBlockNumber), childBlockConfirmations: childBlockConfirmations) }
+        if parentBlockNumber < parentBlockNumbers[comparableBlock]! { return Self(blockHash: blockHash, nextDiffiiculty: nextDifficulty, directParents: prefix + [hash] + suffix, parentBlockNumbers: parentBlockNumbers.setting(key: hash, value: parentBlockNumber), childBlockConfirmations: childBlockConfirmations) }
         return addParent(hash: hash, parentBlockNumber: parentBlockNumber, prefix: prefix + [comparableBlock], suffix: Array(suffix.dropFirst()))
     }
     
@@ -45,11 +45,11 @@ public extension BlockRepresentation {
     
     func removeParent(hash: Digest, prefix: [Digest], suffix: [Digest]) -> Self? {
         guard let comparableBlock = suffix.first else { return nil }
-        if comparableBlock == hash { return Self(blockHash: blockHash, blockNumber: blockNumber, directParents: prefix + Array(suffix.dropFirst()), parentBlockNumbers: parentBlockNumbers.deleting(key: hash), childBlockConfirmations: childBlockConfirmations) }
+        if comparableBlock == hash { return Self(blockHash: blockHash, nextDiffiiculty: nextDifficulty, directParents: prefix + Array(suffix.dropFirst()), parentBlockNumbers: parentBlockNumbers.deleting(key: hash), childBlockConfirmations: childBlockConfirmations) }
         return removeParent(hash: hash, prefix: prefix + [comparableBlock], suffix: Array(suffix.dropFirst()))
     }
     
-    // chain -> parent hash -> child hash
+    // chain -> child hashes
     func allBlockInfoAndChildConfirmations() -> Mapping<ChainName, [Self]> {
         return childBlockConfirmations.keys().reduce(Mapping<ChainName, [Self]>()) { (result, entry) -> Mapping<ChainName, [Self]> in
             return result.setting(key: entry, value: [self])

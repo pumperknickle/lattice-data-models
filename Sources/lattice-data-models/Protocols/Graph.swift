@@ -13,56 +13,129 @@ public protocol Graph: Codable {
     
     // root segments
     var rootSegments: Mapping<SegmentID, SegmentType> { get }
-    // root orphans previous block
-    var orphans: Mapping<SegmentID, Digest> { get }
+    // root orphans previous block (blocks where we haven't validated the previous block)
+    var orphans: Mapping<Digest, SegmentID> { get }
     // parent of segment -> segment, root segments have no parents
     var segmentParents: Mapping<SegmentID, SegmentID> { get }
     // blocks -> segment that block lives in
     var blocks: Mapping<Digest, SegmentID> { get }
-    // child (non validated block on this chain) -> <parent -> blocknumber>
-    var orphanParentConfirmations: Mapping<Digest, Mapping<Digest, Number>> { get }
     var childChains: Mapping<ChainName, Self> { get }
     // block fingerprint -> block number
     var blockNumbers: Mapping<Digest, Number> { get }
-    var tip: Digest { get }
+    // if tip is empty, no genesis block exists yet
+    var tip: Digest? { get }
     
-    init(rootSegments: Mapping<SegmentID, SegmentType>, orphans: Mapping<SegmentID, Digest>, segmentParents: Mapping<SegmentID, SegmentID>, blocks: Mapping<Digest, SegmentID>, orphanParentConfirmations: Mapping<Digest, Mapping<Digest, Number>>, childChains: Mapping<ChainName, Self>, blockNumbers: Mapping<Digest, Number>, tip: Digest)
+    init(rootSegments: Mapping<SegmentID, SegmentType>, orphans: Mapping<Digest, SegmentID>, segmentParents: Mapping<SegmentID, SegmentID>, blocks: Mapping<Digest, SegmentID>, childChains: Mapping<ChainName, Self>, blockNumbers: Mapping<Digest, Number>, tip: Digest?)
 }
 
 public extension Graph {
-    func changing(rootSegments: Mapping<SegmentID, SegmentType>? = nil, orphans: Mapping<SegmentID, Digest>? = nil, segmentParents: Mapping<SegmentID, SegmentID>? = nil, blocks: Mapping<Digest, SegmentID>? = nil, orphanParentConfirmations: Mapping<Digest, Mapping<Digest, Number>>? = nil, childChains: Mapping<ChainName, Self>? = nil, blockNumbers: Mapping<Digest, Number>? = nil, tip: Digest? = nil) -> Self {
-        return Self(rootSegments: rootSegments ?? self.rootSegments, orphans: orphans ?? self.orphans, segmentParents: segmentParents ?? self.segmentParents, blocks: blocks ?? self.blocks, orphanParentConfirmations: orphanParentConfirmations ?? self.orphanParentConfirmations, childChains: childChains ?? self.childChains, blockNumbers: blockNumbers ?? self.blockNumbers, tip: tip ?? self.tip)
+    func changing(rootSegments: Mapping<SegmentID, SegmentType>? = nil, orphans: Mapping<Digest, SegmentID>? = nil, segmentParents: Mapping<SegmentID, SegmentID>? = nil, blocks: Mapping<Digest, SegmentID>? = nil, childChains: Mapping<ChainName, Self>? = nil, blockNumbers: Mapping<Digest, Number>? = nil) -> Self {
+        return Self(rootSegments: rootSegments ?? self.rootSegments, orphans: orphans ?? self.orphans, segmentParents: segmentParents ?? self.segmentParents, blocks: blocks ?? self.blocks, childChains: childChains ?? self.childChains, blockNumbers: blockNumbers ?? self.blockNumbers, tip: tip)
     }
     
-    func insert(path: [ChainName], block: BlockRepresentationType, previousBlockFingerprint: Digest) -> Self {
-        guard let firstChain = path.first else { return insert(block: block, previousBlockFingerprint: previousBlockFingerprint) }
-        guard let childChain = childChains[firstChain] else { return self }
-        return changing(childChains: childChains.setting(key: firstChain, value: childChain.insert(path: Array(path.dropFirst()), block: block, previousBlockFingerprint: previousBlockFingerprint)))
+    func changing(tip: Digest? = nil) -> Self {
+        return Self(rootSegments: rootSegments, orphans: orphans, segmentParents: segmentParents, blocks: blocks, childChains: childChains, blockNumbers: blockNumbers, tip: tip)
     }
     
-    func insert(block: BlockRepresentationType, previousBlockFingerprint: Digest) -> Self {
-        return self
+    func insert(block: BlockRepresentationType, blockNumber: Number, previousBlockFingerprint: Digest, blockTrie: TrieMapping<ChainName, BlockRepresentationType>, blockNumbers: TrieMapping<ChainName, Number>, previousBlockFingerprints: TrieMapping<ChainName, Digest>) -> Self {
+        let newChildChains = childChains.insert(blockTrie: blockTrie, blockNumbers: blockNumbers, previousBlockFingerprints: previousBlockFingerprints)
+        return changing(childChains: newChildChains).insert(block: block, blockNumber: blockNumber, previousBlockFingerprint: previousBlockFingerprint)
+    }
+    
+    func insert(block: BlockRepresentationType, blockNumber: Number, previousBlockFingerprint: Digest) -> Self {
+        let newBlockNumbers = blockNumbers.setting(key: block.blockHash, value: blockNumber)
+        if let orphanSegment = orphans[block.blockHash] {
+            let newSegment = rootSegments[orphanSegment]!.addToStart(block: block, blockNumber: blockNumber)
+            if blockNumbers[previousBlockFingerprint] == nil {
+                let newOrphans = orphans.setting(key: previousBlockFingerprint, value: orphanSegment)
+                let newRootSegments = rootSegments.setting(key: orphanSegment, value: newSegment)
+                let newBlocks = blocks.setting(key: block.blockHash, value: orphanSegment)
+                return changing(rootSegments: newRootSegments, orphans: newOrphans, blocks: newBlocks, blockNumbers: newBlockNumbers)
+            }
+            let newOrphans = orphans.deleting(key: block.blockHash)
+            return changing(orphans: newOrphans, blockNumbers: newBlockNumbers).insertSegment(segment: newSegment, segmentID: orphanSegment, previousBlockFingerPrint: previousBlockFingerprint, blockNumber: blockNumber)
+        }
+        let newSegment = SegmentType.createWithSingleBlock(block: block, blockNumber: blockNumber)
+        let newSegmentID = SegmentID.random()
+        if blockNumbers[previousBlockFingerprint] == nil {
+            let newRootSegments = rootSegments.setting(key: newSegmentID, value: newSegment)
+            let newOrphans = orphans.setting(key: previousBlockFingerprint, value: newSegmentID)
+            let newBlocks = blocks.setting(key: block.blockHash, value: newSegmentID)
+            return changing(rootSegments: newRootSegments, orphans: newOrphans, blocks: newBlocks, blockNumbers: newBlockNumbers)
+        }
+        return changing(blockNumbers: newBlockNumbers).insertSegment(segment: newSegment, segmentID: newSegmentID, previousBlockFingerPrint: previousBlockFingerprint, blockNumber: blockNumber)
+    }
+    
+    func insertSegment(segment: SegmentType, segmentID: SegmentID, previousBlockFingerPrint: Digest, blockNumber: Number) -> Self {
+        let path = parentSegments(blockFingerprint: previousBlockFingerPrint)
+        guard let firstPath = path.first else { return self }
+        let newSegmentAndDelta = rootSegments.insert(firstPath: firstPath, path: path.dropFirst(), segment: segment, segmentID: segmentID, segmentStartNumber: blockNumber, previousBlockFingerprint: previousBlockFingerPrint)
+        let newBlocks = newSegmentAndDelta.1.elements().reduce(blocks) { result, entry in
+            return result.setting(key: entry.0, value: entry.1)
+        }
+        let newRootSegments = rootSegments.setting(key: segmentID, value: newSegmentAndDelta.0)
+        let newSegmentParents = newSegmentAndDelta.2.elements().reduce(segmentParents) { result, entry in
+            return result.setting(key: entry.0, value: entry.1)
+        }
+        let newGraph = changing(rootSegments: newRootSegments, segmentParents: newSegmentParents, blocks: newBlocks)
+        if previousBlockFingerPrint == tip {
+            let confirmationsAndTip = segment.getParentConfirmationsAndTip()
+            let newChildChains = confirmationsAndTip.0.elements().reduce(newGraph.childChains) { result, entry in
+                guard let childChain = result[entry.0] else { return result }
+                let newChain = childChain.changeParentConfirmations(additions: entry.1)
+                return result.setting(key: entry.0, value: newChain)
+            }
+            return changing(childChains: newChildChains).changing(tip: confirmationsAndTip.1)
+        }
+        return newGraph.reorganizeWithNewTip()
     }
 
-//    func changeParentConfirmations(additions: Mapping<Digest, Mapping<Digest, Number>>, removals: Mapping<Digest, Mapping<Digest, Number>>) -> Self {
-//        let additionsTrie = additions.elements().reduce(TrieMapping<SegmentID, [Digest]>()) { (result, entry) -> TrieMapping<SegmentID, [Digest]> in
-//            let route = parentSegments(blockFingerprint: entry.0)
-//            if route == [] { return result }
-//            return result.setting(keys: route, value: (result[route] ?? []) + [entry.0])
-//        }
-//        let removalsTrie = removals.elements().reduce(TrieMapping<SegmentID, [Digest]>()) { (result, entry) -> TrieMapping<SegmentID, [Digest]> in
-//            let route = parentSegments(blockFingerprint: entry.0)
-//            if route == [] { return result }
-//            return result.setting(keys: route, value: (result[route] ?? []) + [entry.0])
-//        }
-//        let blockNumbers = (removals.keys() + additions.keys()).reduce(Mapping<Digest, Number>()) { (result, entry) -> Mapping<Digest, Number> in
-//            return result.setting(key: entry, value: self.blockNumbers[entry]!)
-//        }
-//        let newRootSegments = rootSegments.changeParentConfirmations(additions: additions, removals: removals, additionsTrie: additionsTrie, removalsTrie: removalsTrie, blockNumbers: blockNumbers)
-//        
-//    }
+    // insert new cross linked parent confs with parent chain reorg
+    // additions: child block fingerprint -> Mapping (Parent block fingerprint -> parent block number)
+    func changeParentConfirmations(additions: Mapping<Digest, Mapping<Digest, Number>> = Mapping<Digest, Mapping<Digest, Number>>(), removals: Mapping<Digest, Mapping<Digest, Number>> = Mapping<Digest, Mapping<Digest, Number>>()) -> Self {
+        let additionsTrie = additions.elements().reduce(TrieMapping<SegmentID, [Digest]>()) { (result, entry) -> TrieMapping<SegmentID, [Digest]> in
+            let route = parentSegments(blockFingerprint: entry.0)
+            if route == [] { return result }
+            return result.setting(keys: route, value: (result[route] ?? []) + [entry.0])
+        }
+        let removalsTrie = removals.elements().reduce(TrieMapping<SegmentID, [Digest]>()) { (result, entry) -> TrieMapping<SegmentID, [Digest]> in
+            let route = parentSegments(blockFingerprint: entry.0)
+            if route == [] { return result }
+            return result.setting(keys: route, value: (result[route] ?? []) + [entry.0])
+        }
+        let blockNumbers = (removals.keys() + additions.keys()).reduce(Mapping<Digest, Number>()) { (result, entry) -> Mapping<Digest, Number> in
+            return result.setting(key: entry, value: self.blockNumbers[entry]!)
+        }
+        let newRootSegments = rootSegments.changeParentConfirmations(additions: additions, removals: removals, additionsTrie: additionsTrie, removalsTrie: removalsTrie, blockNumbers: blockNumbers)
+        return changing(rootSegments: newRootSegments, blocks: blocks, blockNumbers: blockNumbers).reorganizeWithNewTip()
+    }
+    
+    // find the new chain tip and recompute child
+    func reorganizeWithNewTip() -> Self {
+        let rootsWithoutOrphans = orphans.values().reduce(rootSegments) { result, entry in
+            return result.deleting(key: entry)
+        }
+        let newTip = rootsWithoutOrphans.computeTip()
+        if newTip == tip { return self }
+        let oldSegments = tip == nil ? [] : parentSegments(blockFingerprint: tip!)
+        let newSegments = newTip == nil ? [] : parentSegments(blockFingerprint: newTip!)
+        let diff = tailDifference(lhs: ArraySlice(oldSegments), rhs: ArraySlice(newSegments))
+        let oldPath = oldSegments.dropLast(diff.0.count)
+        let newPath = newSegments.dropLast(diff.1.count)
+        let removals = rootSegments.getAllChildConfirmations(ignore: ArraySlice(oldPath), keep: ArraySlice(diff.0))
+        let additions = rootSegments.getAllChildConfirmations(ignore: ArraySlice(newPath), keep: ArraySlice(diff.1))
+        let newChildChains = Set(removals.keys()).union(additions.keys()).reduce(childChains) { result, entry in
+            let removalsForChain = removals[entry] ?? Mapping<Digest, Mapping<Digest, Number>>()
+            let additionsForChain = additions[entry] ?? Mapping<Digest, Mapping<Digest, Number>>()
+            guard let childChain = result[entry] else { return result }
+            let newChildChain = childChain.changeParentConfirmations(additions: additionsForChain, removals: removalsForChain)
+            return result.setting(key: entry, value: newChildChain)
+        }
+        return changing(childChains: newChildChains).changing(tip: tip)
+    }
     
     func chainSegments() -> [SegmentID] {
+        guard let tip = tip else { return [] }
         guard let tipSegment = blocks[tip] else { return [] }
         return parentSegments(segment: tipSegment)
     }
@@ -78,12 +151,29 @@ public extension Graph {
     }
     
     func inChain(blockFingerPrints: [Digest]) -> [Digest] {
-        let chainSegs = chainSegments()
+        let chainSegs = Set(chainSegments())
         return blockFingerPrints.filter { self.blocks[$0] != nil }.filter { chainSegs.contains(self.blocks[$0]!) }
     }
     
     func inChain(blockFingerprint: Digest) -> Bool {
         guard let segmentID = blocks[blockFingerprint] else { return false }
         return chainSegments().contains(segmentID)
+    }
+}
+
+func tailDifference<T: Comparable>(lhs: ArraySlice<T>, rhs: ArraySlice<T>) -> ([T], [T]) {
+    guard let firstLeft = lhs.first, let firstRight = rhs.first else { return (Array(lhs), Array(rhs)) }
+    if firstLeft == firstRight { return tailDifference(lhs: lhs.dropFirst(), rhs: rhs.dropFirst()) }
+    return (Array(lhs), Array(rhs))
+}
+
+public extension Mapping where Value: Graph, Key == Value.ChainName {
+    func insert(blockTrie: TrieMapping<Key, Value.BlockRepresentationType>, blockNumbers: TrieMapping<Key, Value.Number>, previousBlockFingerprints: TrieMapping<Key, Value.Digest>) -> Self {
+        return blockTrie.children.keys().reduce(self) { result, entry in
+            guard let block = blockTrie[[entry]], let blockNumber = blockNumbers[[entry]], let previousBlockFingerprint = previousBlockFingerprints[[entry]] else { return result }
+            guard let childChain = result[entry] else { return result }
+            let newChildChain = childChain.insert(block: block, blockNumber: blockNumber, previousBlockFingerprint: previousBlockFingerprint, blockTrie: blockTrie.subtree(keys: [entry]), blockNumbers: blockNumbers.subtree(keys: [entry]), previousBlockFingerprints: previousBlockFingerprints.subtree(keys: [entry]))
+            return result.setting(key: entry, value: newChildChain)
+        }
     }
 }
