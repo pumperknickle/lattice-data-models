@@ -6,8 +6,8 @@
         "repositoryURL": "https://github.com/pumperknickle/AwesomeDictionary.git",
         "state": {
           "branch": null,
-          "revision": "5a6c7d2ddeca66dbb87b88d92735f281b4b383cd",
-          "version": "0.1.0"
+          "revision": "aae45bd08bbe66dbf55099a6fad92153702a1cd4",
+          "version": "0.1.1"
         }
       },
       {
@@ -15,8 +15,8 @@
         "repositoryURL": "https://github.com/pumperknickle/AwesomeTrie.git",
         "state": {
           "branch": null,
-          "revision": "cce9a3d9eb675943b4b777b85da965c7d166b01c",
-          "version": "0.1.5"
+          "revision": "4ce2953fbd810c8bbd4fc979d8d913e2910b4f13",
+          "version": "0.1.9"
         }
       },
       {
@@ -24,8 +24,26 @@
         "repositoryURL": "https://github.com/pumperknickle/Bedrock.git",
         "state": {
           "branch": null,
-          "revision": "6112a641374616f1fe721ceb2762054e2f6ccfed",
-          "version": "0.2.1"
+          "revision": "fc7f71e7bdaa18a95dd35b770c77216519b2b8c9",
+          "version": "0.2.2"
+        }
+      },
+      {
+        "package": "CwlCatchException",
+        "repositoryURL": "https://github.com/mattgallagher/CwlCatchException.git",
+        "state": {
+          "branch": null,
+          "revision": "682841464136f8c66e04afe5dbd01ab51a3a56f2",
+          "version": "2.1.0"
+        }
+      },
+      {
+        "package": "CwlPreconditionTesting",
+        "repositoryURL": "https://github.com/mattgallagher/CwlPreconditionTesting.git",
+        "state": {
+          "branch": null,
+          "revision": "02b7a39a99c4da27abe03cab2053a9034379639f",
+          "version": "2.0.0"
         }
       },
       {
@@ -33,8 +51,8 @@
         "repositoryURL": "https://github.com/Quick/Nimble.git",
         "state": {
           "branch": null,
-          "revision": "7a46a5fc86cb917f69e3daf79fcb045283d8f008",
-          "version": "8.1.2"
+          "revision": "af1730dde4e6c0d45bf01b99f8a41713ce536790",
+          "version": "9.2.0"
         }
       },
       {
@@ -42,8 +60,8 @@
         "repositoryURL": "https://github.com/Quick/Quick.git",
         "state": {
           "branch": null,
-          "revision": "09b3becb37cb2163919a3842a4c5fa6ec7130792",
-          "version": "2.2.1"
+          "revision": "8cce6acd38f965f5baa3167b939f86500314022b",
+          "version": "3.1.2"
         }
       }
     ]

@@ -16,7 +16,7 @@ public protocol BlockRepresentation: Codable {
     var parentBlockNumbers: Mapping<Digest, Number> { get }
     var childBlockConfirmations: Mapping<ChainName, Digest> { get }
     
-    init(blockHash: Digest, nextDiffiiculty: Digest, directParents: [Digest], parentBlockNumbers: Mapping<Digest, Number>, childBlockConfirmations: Mapping<ChainName, Digest>)
+    init(blockHash: Digest, nextDifficulty: Digest, directParents: [Digest], parentBlockNumbers: Mapping<Digest, Number>, childBlockConfirmations: Mapping<ChainName, Digest>)
 }
 
 public extension BlockRepresentation {
@@ -30,30 +30,29 @@ public extension BlockRepresentation {
     }
     
     func addParent(hash: Digest, parentBlockNumber: Number) -> Self {
-        return addParent(hash: hash, parentBlockNumber: parentBlockNumber, prefix: [], suffix: directParents)
+        return addParent(hash: hash, parentBlockNumber: parentBlockNumber, index: 0)
     }
     
-    func addParent(hash: Digest, parentBlockNumber: Number, prefix: [Digest], suffix: [Digest]) -> Self {
-        guard let comparableBlock = suffix.first else { return Self(blockHash: blockHash, nextDiffiiculty: nextDifficulty, directParents: prefix + [hash], parentBlockNumbers: parentBlockNumbers.setting(key: hash, value: parentBlockNumber), childBlockConfirmations: childBlockConfirmations) }
-        if parentBlockNumber < parentBlockNumbers[comparableBlock]! { return Self(blockHash: blockHash, nextDiffiiculty: nextDifficulty, directParents: prefix + [hash] + suffix, parentBlockNumbers: parentBlockNumbers.setting(key: hash, value: parentBlockNumber), childBlockConfirmations: childBlockConfirmations) }
-        return addParent(hash: hash, parentBlockNumber: parentBlockNumber, prefix: prefix + [comparableBlock], suffix: Array(suffix.dropFirst()))
-    }
-    
-    func removeParent(hash: Digest) -> Self? {
-        return removeParent(hash: hash, prefix: [], suffix: directParents)
-    }
-    
-    func removeParent(hash: Digest, prefix: [Digest], suffix: [Digest]) -> Self? {
-        guard let comparableBlock = suffix.first else { return nil }
-        if comparableBlock == hash { return Self(blockHash: blockHash, nextDiffiiculty: nextDifficulty, directParents: prefix + Array(suffix.dropFirst()), parentBlockNumbers: parentBlockNumbers.deleting(key: hash), childBlockConfirmations: childBlockConfirmations) }
-        return removeParent(hash: hash, prefix: prefix + [comparableBlock], suffix: Array(suffix.dropFirst()))
-    }
-    
-    // chain -> child hashes
-    func allBlockInfoAndChildConfirmations() -> Mapping<ChainName, [Self]> {
-        return childBlockConfirmations.keys().reduce(Mapping<ChainName, [Self]>()) { (result, entry) -> Mapping<ChainName, [Self]> in
-            return result.setting(key: entry, value: [self])
+    func addParent(hash: Digest, parentBlockNumber: Number, index: Int) -> Self {
+        if index >= directParents.count { return Self(blockHash: blockHash, nextDifficulty: nextDifficulty, directParents: directParents + [hash], parentBlockNumbers: parentBlockNumbers.setting(key: hash, value: parentBlockNumber), childBlockConfirmations: childBlockConfirmations) }
+        let comparableBlock = directParents[index]
+        if parentBlockNumber < parentBlockNumbers[comparableBlock]! {
+            return Self(blockHash: blockHash, nextDifficulty: nextDifficulty, directParents: Array(directParents[0..<index]) + [hash] + Array(directParents[index..<directParents.count]), parentBlockNumbers: parentBlockNumbers.setting(key: hash, value: parentBlockNumber), childBlockConfirmations: childBlockConfirmations)
         }
+        return addParent(hash: hash, parentBlockNumber: parentBlockNumber, index: index + 1)
+    }
+
+    func removeParent(hash: Digest) -> Self? {
+        return removeParent(hash: hash, index: 0)
+    }
+    
+    func removeParent(hash: Digest, index: Int) -> Self? {
+        if index >= directParents.count { return nil }
+        let comparableBlock = directParents[index]
+        if comparableBlock == hash {
+            return Self(blockHash: blockHash, nextDifficulty: nextDifficulty, directParents: Array(directParents[0..<index]) + Array(directParents[index+1..<directParents.count]), parentBlockNumbers: parentBlockNumbers.deleting(key: hash), childBlockConfirmations: childBlockConfirmations)
+        }
+        return removeParent(hash: hash, index: index + 1)
     }
 }
 

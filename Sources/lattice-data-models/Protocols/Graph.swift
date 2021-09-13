@@ -24,17 +24,27 @@ public protocol Graph: Codable {
     var blockNumbers: Mapping<Digest, Number> { get }
     // if tip is empty, no genesis block exists yet
     var tip: Digest? { get }
+    var maxLength: Int? { get }
     
-    init(rootSegments: Mapping<SegmentID, SegmentType>, orphans: Mapping<Digest, SegmentID>, segmentParents: Mapping<SegmentID, SegmentID>, blocks: Mapping<Digest, SegmentID>, childChains: Mapping<ChainName, Self>, blockNumbers: Mapping<Digest, Number>, tip: Digest?)
+    init(rootSegments: Mapping<SegmentID, SegmentType>, orphans: Mapping<Digest, SegmentID>, segmentParents: Mapping<SegmentID, SegmentID>, blocks: Mapping<Digest, SegmentID>, childChains: Mapping<ChainName, Self>, blockNumbers: Mapping<Digest, Number>, tip: Digest?, maxLength: Int?)
 }
 
 public extension Graph {
+    func createNew(maxLength: Int?) -> Self {
+        return Self(rootSegments: Mapping<SegmentID, SegmentType>(), orphans: Mapping<Digest, SegmentID>(), segmentParents: Mapping<SegmentID, SegmentID>(), blocks: Mapping<Digest, SegmentID>(), childChains: Mapping<ChainName, Self>(), blockNumbers: Mapping<Digest, Number>(), tip: nil, maxLength: maxLength)
+    }
+    
+    func getTipNumber() -> Number? {
+        guard let tip = tip else { return nil }
+        return blockNumbers[tip]
+    }
+    
     func changing(rootSegments: Mapping<SegmentID, SegmentType>? = nil, orphans: Mapping<Digest, SegmentID>? = nil, segmentParents: Mapping<SegmentID, SegmentID>? = nil, blocks: Mapping<Digest, SegmentID>? = nil, childChains: Mapping<ChainName, Self>? = nil, blockNumbers: Mapping<Digest, Number>? = nil) -> Self {
-        return Self(rootSegments: rootSegments ?? self.rootSegments, orphans: orphans ?? self.orphans, segmentParents: segmentParents ?? self.segmentParents, blocks: blocks ?? self.blocks, childChains: childChains ?? self.childChains, blockNumbers: blockNumbers ?? self.blockNumbers, tip: tip)
+        return Self(rootSegments: rootSegments ?? self.rootSegments, orphans: orphans ?? self.orphans, segmentParents: segmentParents ?? self.segmentParents, blocks: blocks ?? self.blocks, childChains: childChains ?? self.childChains, blockNumbers: blockNumbers ?? self.blockNumbers, tip: tip, maxLength: maxLength)
     }
     
     func changing(tip: Digest? = nil) -> Self {
-        return Self(rootSegments: rootSegments, orphans: orphans, segmentParents: segmentParents, blocks: blocks, childChains: childChains, blockNumbers: blockNumbers, tip: tip)
+        return Self(rootSegments: rootSegments, orphans: orphans, segmentParents: segmentParents, blocks: blocks, childChains: childChains, blockNumbers: blockNumbers, tip: tip, maxLength: maxLength)
     }
     
     func insert(block: BlockRepresentationType, blockNumber: Number, previousBlockFingerprint: Digest, blockTrie: TrieMapping<ChainName, BlockRepresentationType>, blockNumbers: TrieMapping<ChainName, Number>, previousBlockFingerprints: TrieMapping<ChainName, Digest>) -> Self {
@@ -42,7 +52,47 @@ public extension Graph {
         return changing(childChains: newChildChains).insert(block: block, blockNumber: blockNumber, previousBlockFingerprint: previousBlockFingerprint)
     }
     
+    // remove orphans that have starting block < tipNumber - max length
+    // remove beginning blocks
+    func trimmingStart() -> Self {
+        guard let tipNumber = getTipNumber() else { return self }
+        guard let maxLength = maxLength else { return self }
+        let chainSegmentSet = Set(chainSegments())
+        let orphanValues = orphans.elements().reduce(Mapping<SegmentID, Digest>()) { result, entry in
+            return result.setting(key: entry.1, value: entry.0)
+        }
+        let minStartNumber = tipNumber.advanced(by: -1 * maxLength)
+        let newRoots = rootSegments.elements().reduce(Mapping<SegmentID, SegmentType>()) { result, entry in
+            if !orphanValues.contains(entry.0) {
+                return result.setting(key: entry.0, value: entry.1.trimming(minStartNumber: minStartNumber))
+            }
+            if entry.1.firstBlockNumber >= minStartNumber {
+                return result.setting(key: entry.0, value: entry.1)
+            }
+        }
+        
+    }
+    
+    func clean(segmentID: SegmentID) -> Self {
+        guard let parent = segmentParents[segmentID] else { return self }
+        let newSegmentParents = segmentParents.deleting(key: segmentID)
+        return changing(segmentParents: newSegmentParents).clean(segmentID: parent)
+    }
+    
+    func trimmingStart(segments: ArraySlice<(SegmentID, SegmentType)>, minStartNumber: Number, orphanValues: Mapping<SegmentID, Digest>) -> Self {
+        guard let firstSegmentTuple = segments.first else { return self }
+        guard let orphanDigest = orphanValues[firstSegmentTuple.0] else {
+            let trimTuple = firstSegmentTuple.1.trimming(minStartNumber: minStartNumber, currentSegmentID: firstSegmentTuple.0, removedBlockDigests: TrieBasedSet<Digest>())
+            let newRootSegments = rootSegments.deleting(key: firstSegmentTuple.0).setting(key: trimTuple.1, value: trimTuple.0)
+            let newBlocks
+            return changing(rootSegments:)
+        }
+        
+    }
+    
     func insert(block: BlockRepresentationType, blockNumber: Number, previousBlockFingerprint: Digest) -> Self {
+        if blocks.contains(block.blockHash) { return self }
+        if tip != nil && blockNumbers[tip!]!.advanced(by: -1 * maxLength) > blockNumber { return self }
         let newBlockNumbers = blockNumbers.setting(key: block.blockHash, value: blockNumber)
         if let orphanSegment = orphans[block.blockHash] {
             let newSegment = rootSegments[orphanSegment]!.addToStart(block: block, blockNumber: blockNumber)
@@ -53,7 +103,7 @@ public extension Graph {
                 return changing(rootSegments: newRootSegments, orphans: newOrphans, blocks: newBlocks, blockNumbers: newBlockNumbers)
             }
             let newOrphans = orphans.deleting(key: block.blockHash)
-            return changing(orphans: newOrphans, blockNumbers: newBlockNumbers).insertSegment(segment: newSegment, segmentID: orphanSegment, previousBlockFingerPrint: previousBlockFingerprint, blockNumber: blockNumber)
+            return changing(orphans: newOrphans, blockNumbers: newBlockNumbers).insertSegment(segment: newSegment, segmentID: orphanSegment, previousBlockFingerPrint: previousBlockFingerprint, blockNumber: blockNumber).trimmingStart()
         }
         let newSegment = SegmentType.createWithSingleBlock(block: block, blockNumber: blockNumber)
         let newSegmentID = SegmentID.random()
@@ -63,13 +113,13 @@ public extension Graph {
             let newBlocks = blocks.setting(key: block.blockHash, value: newSegmentID)
             return changing(rootSegments: newRootSegments, orphans: newOrphans, blocks: newBlocks, blockNumbers: newBlockNumbers)
         }
-        return changing(blockNumbers: newBlockNumbers).insertSegment(segment: newSegment, segmentID: newSegmentID, previousBlockFingerPrint: previousBlockFingerprint, blockNumber: blockNumber)
+        return changing(blockNumbers: newBlockNumbers).insertSegment(segment: newSegment, segmentID: newSegmentID, previousBlockFingerPrint: previousBlockFingerprint, blockNumber: blockNumber).trimmingStart()
     }
     
     func insertSegment(segment: SegmentType, segmentID: SegmentID, previousBlockFingerPrint: Digest, blockNumber: Number) -> Self {
         let path = parentSegments(blockFingerprint: previousBlockFingerPrint)
         guard let firstPath = path.first else { return self }
-        let newSegmentAndDelta = rootSegments.insert(firstPath: firstPath, path: path.dropFirst(), segment: segment, segmentID: segmentID, segmentStartNumber: blockNumber, previousBlockFingerprint: previousBlockFingerPrint)
+        let newSegmentAndDelta = rootSegments.insert(firstPath: firstPath, path: path.dropFirst(), segment: segment, segmentID: segmentID, previousBlockFingerprint: previousBlockFingerPrint)
         let newBlocks = newSegmentAndDelta.1.elements().reduce(blocks) { result, entry in
             return result.setting(key: entry.0, value: entry.1)
         }
@@ -131,7 +181,7 @@ public extension Graph {
             let newChildChain = childChain.changeParentConfirmations(additions: additionsForChain, removals: removalsForChain)
             return result.setting(key: entry, value: newChildChain)
         }
-        return changing(childChains: newChildChains).changing(tip: tip)
+        return changing(childChains: newChildChains).changing(tip: newTip)
     }
     
     func chainSegments() -> [SegmentID] {

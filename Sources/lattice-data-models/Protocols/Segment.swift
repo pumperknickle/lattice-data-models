@@ -18,7 +18,9 @@ public protocol Segment: Codable, Comparable {
     // number of max chain's last segment's latest block
     var tipNumber: Number { get }
     // number of last block in this segment
-    var latestBlock: Number { get }
+    var lastBlockNumber: Number { get }
+    // number of first block in this segment
+    var firstBlockNumber: Number { get }
     // lower the target, the higher the difficulty
     var latestBlockDifficultyTarget: Digest { get }
     // mapping of block number to block
@@ -26,7 +28,7 @@ public protocol Segment: Codable, Comparable {
     // mapping of child segment id to child segment
     var childSegments: Mapping<SegmentID, Self> { get }
     
-    init(tipNumber: Number, earliestParent: Number?, latestBlock: Number, latestBlockDifficultyTarget: Digest, blocks: Mapping<Number, BlockRepresentationType>, childSegments: Mapping<SegmentID, Self>)
+    init(tipNumber: Number, earliestParent: Number?, lastBlockNumber: Number, firstBlockNumber: Number, latestBlockDifficultyTarget: Digest, blocks: Mapping<Number, BlockRepresentationType>, childSegments: Mapping<SegmentID, Self>)
 }
 
 public extension Segment {
@@ -43,20 +45,44 @@ public extension Segment {
     }
 
     func getLatestBlock() -> BlockRepresentationType {
-        return blocks[latestBlock]!
+        return blocks[lastBlockNumber]!
     }
     
+    func removeFirstBlock() -> Self {
+        return changing(firstBlockNumber: firstBlockNumber.advanced(by: 1), latestBlockDifficulty: latestBlockDifficultyTarget, blocks: blocks.deleting(key: firstBlockNumber))
+    }
+    
+    func trimming(minStartNumber: Number, currentSegmentID: SegmentID, removedBlockDigests: TrieBasedSet<Digest>) -> (Self, SegmentID, TrieBasedSet<Digest>) {
+        if firstBlockNumber >= minStartNumber { return (self, currentSegmentID, removedBlockDigests) }
+        if lastBlockNumber < minStartNumber {
+            let sorted = childSegments.elements().sorted(by: { $0.1 < $1.1 }).first!
+            let newRemovedBlockDigests = blocks.values().reduce(removedBlockDigests) { result, entry in
+                return result.adding(entry.blockHash)
+            }
+            return sorted.1.trimming(minStartNumber: minStartNumber, currentSegmentID: sorted.0, removedBlockDigests: newRemovedBlockDigests)
+        }
+        let newRemovedBlockDigests = removedBlockDigests.deleting(key: blocks[firstBlockNumber]!.blockHash)
+        return removeFirstBlock().trimming(minStartNumber: minStartNumber, currentSegmentID: currentSegmentID, removedBlockDigests: newRemovedBlockDigests)
+    }
+    
+    func getLastSegments(currentSegmentID: SegmentID) -> Set<SegmentID> {
+        if childSegments.isEmpty() { return Set<SegmentID>([currentSegmentID]) }
+        return childSegments.elements().map { $0.1.getLastSegments(currentSegmentID: $0.0) }.reduce(Set<SegmentID>()) { result, entry in
+            return result.union(entry)
+        }
+    }
+        
     // segments are strictly ordered
     static func == (lhs: Self, rhs: Self) -> Bool {
         return false
     }
     
-    func changing(tipNumber: Number? = nil, latestBlock: Number? = nil, latestBlockDifficulty: Digest? = nil, blocks: Mapping<Number, BlockRepresentationType>? = nil, childSegments: Mapping<SegmentID, Self>? = nil) -> Self {
-        return Self(tipNumber: tipNumber ?? self.tipNumber, earliestParent: earliestParent, latestBlock: latestBlock ?? self.latestBlock, latestBlockDifficultyTarget: latestBlockDifficulty ?? self.latestBlockDifficultyTarget, blocks: blocks ?? self.blocks, childSegments: childSegments ?? self.childSegments)
+    func changing(tipNumber: Number? = nil, lastBlockNumber: Number? = nil, firstBlockNumber: Number? = nil, latestBlockDifficulty: Digest? = nil, blocks: Mapping<Number, BlockRepresentationType>? = nil, childSegments: Mapping<SegmentID, Self>? = nil) -> Self {
+        return Self(tipNumber: tipNumber ?? self.tipNumber, earliestParent: earliestParent, lastBlockNumber: lastBlockNumber ?? self.lastBlockNumber, firstBlockNumber: firstBlockNumber ?? self.firstBlockNumber, latestBlockDifficultyTarget: latestBlockDifficulty ?? self.latestBlockDifficultyTarget, blocks: blocks ?? self.blocks, childSegments: childSegments ?? self.childSegments)
     }
     
     func changing(earliestParent: Number?) -> Self {
-        return Self(tipNumber: tipNumber, earliestParent: earliestParent, latestBlock: latestBlock, latestBlockDifficultyTarget: latestBlockDifficultyTarget, blocks: blocks, childSegments: childSegments)
+        return Self(tipNumber: tipNumber, earliestParent: earliestParent, lastBlockNumber: lastBlockNumber, firstBlockNumber: firstBlockNumber, latestBlockDifficultyTarget: latestBlockDifficultyTarget, blocks: blocks, childSegments: childSegments)
     }
     
     func removeParents(blockNumber: Number, parents: Mapping<Digest, Number>) -> Self {
@@ -73,7 +99,7 @@ public extension Segment {
     
     func addParent(blockNumber: Number, parent: Digest, blockNumberOfParent: Number) -> Self {
         let newBlock = blocks[blockNumber]!.addParent(hash: parent, parentBlockNumber: blockNumberOfParent)
-        let newEarliest = earliestParent != nil ? (blockNumber < earliestParent! ? blockNumber : earliestParent!) : blockNumber
+        let newEarliest = earliestParent != nil ? (blockNumber < earliestParent! ? blockNumber : earliestParent!) : blockNumberOfParent
         return changing(blocks: blocks.setting(key: blockNumber, value: newBlock)).changing(earliestParent: newEarliest)
     }
     
@@ -87,6 +113,7 @@ public extension Segment {
     // apply parent cross link confs to current segment
     // recompute earliest parent
     // if no earliest parent recompute longest chain
+    // if modifying parent confirmations in descendants, only case where tip needs to be recomputed is when all parent confs are removed
     func changeParentConfirmations(currentAdditions: Mapping<Digest, Mapping<Digest, Number>>, currentRemovals: Mapping<Digest, Mapping<Digest, Number>>, additions: Mapping<Digest, Mapping<Digest, Number>>, removals: Mapping<Digest, Mapping<Digest, Number>>, additionsTrie: TrieMapping<SegmentID, [Digest]>, removalsTrie: TrieMapping<SegmentID, [Digest]>, blockNumbers: Mapping<Digest, Number>) -> Self {
         let addedCurrentAdditions = currentAdditions.elements().reduce(self) { (result, entry) -> Self in
             return result.addParents(blockNumber: blockNumbers[entry.0]!, parents: entry.1)
@@ -115,17 +142,25 @@ public extension Segment {
     
     // if no parents (most common on root graph, tip number is found using max tip number)
     func updateWithMaxTipNumber() -> Self {
-        return changing(latestBlock: (childSegments.values().map { $0.tipNumber } + [tipNumber]).max()!)
+        return changing(tipNumber: (childSegments.values().map { $0.tipNumber } + [tipNumber]).max()!)
     }
+//
+//    func updateEarliestParent() -> Self {
+//        return changing(earliestParent: findEarliestParent())
+//    }
+//
+//    func findEarliestParent() -> Number? {
+//        guard let noChildChanges = findEarliestParentNoChildChanges() else { return findEarliestParentOnlyChildChanges() }
+//        return noChildChanges
+//    }
     
     func updateEarliestParent() -> Self {
-        return changing(earliestParent: findEarliestParent())
+        return changing(earliestParent: findEarliestParent(start: firstBlockNumber))
     }
     
-    func findEarliestParent() -> Number? {
-        guard let onlyChildChanges = findEarliestParentOnlyChildChanges() else { return findEarliestParentNoChildChanges() }
-        guard let noChildChanges = findEarliestParentNoChildChanges() else { return onlyChildChanges }
-        return min(onlyChildChanges, noChildChanges)
+    func findEarliestParent(start: Number) -> Number? {
+        guard let noChildChanges = findEarliestParentNoChildChanges(index: start) else { return findEarliestParentOnlyChildChanges() }
+        return noChildChanges
     }
     
     func updateEarliestParentOnlyChildChanges() -> Self {
@@ -133,7 +168,7 @@ public extension Segment {
     }
     
     func findEarliestParentOnlyChildChanges() -> Number? {
-        return childSegments.values().filter { $0.earliestParent != nil }.map { $0.earliestParent! }.min()
+        return earliestParent != nil ? earliestParent : childSegments.values().filter { $0.earliestParent != nil }.map { $0.earliestParent! }.min()
     }
     
     func updateEarliestParentNoChildChanges() -> Self {
@@ -141,19 +176,23 @@ public extension Segment {
     }
     
     func findEarliestParentNoChildChanges() -> Number? {
-        return blocks.elements().filter { $0.1.earliestParent() != nil }.map { $0.1.earliestParent()! }.min()
+        return findEarliestParentNoChildChanges(index: firstBlockNumber)
+    }
+    
+    func findEarliestParentNoChildChanges(index: Number) -> Number? {
+        guard let block = blocks[index] else { return nil }
+        if block.earliestParent() != nil { return block.earliestParent() }
+        return findEarliestParent(start: index.advanced(by: 1))
     }
     
     // chain -> child block fing -> parent block fing -> parent block number
     func allBlocksAndChildConfirmations() -> Mapping<BlockRepresentationType.ChainName, Mapping<Digest, Mapping<Digest, Number>>> {
         return blocks.elements().reduce(Mapping<BlockRepresentationType.ChainName, Mapping<Digest, Mapping<Digest, Number>>>()) { result, entry in
-            return entry.1.allBlockInfoAndChildConfirmations().elements().reduce(result) { result1, entry1 in
+            return entry.1.childBlockConfirmations.elements().reduce(result) { result1, entry1 in
                 let chainName = entry1.0
                 let current = result1[chainName] ?? Mapping<Digest, Mapping<Digest, Number>>()
-                let valueToSet = entry1.1.reduce(current) { result2, entry2 in
-                    let currentVal = result2[entry2.blockHash] ?? Mapping<Digest, Number>()
-                    return result2.setting(key: entry2.blockHash, value: currentVal.setting(key: entry.1.blockHash, value: entry.0))
-                }
+                let currentVal = current[entry1.1] ?? Mapping<Digest, Number>()
+                let valueToSet = current.setting(key: entry1.1, value: currentVal.setting(key: entry.1.blockHash, value: entry.0))
                 return result1.setting(key: chainName, value: valueToSet)
             }
         }
@@ -162,16 +201,17 @@ public extension Segment {
     func addToStart(block: BlockRepresentationType, blockNumber: Number) -> Self {
         let newEarliestParent = earliestParent == nil ? block.earliestParent() : (block.earliestParent() == nil ? earliestParent : min(block.earliestParent()!, earliestParent!))
         let newBlocks = blocks.setting(key: blockNumber, value: block)
-        return changing(earliestParent: newEarliestParent).changing(blocks: newBlocks)
+        return changing(earliestParent: newEarliestParent).changing(firstBlockNumber: blockNumber, blocks: newBlocks)
     }
     
     // returns
     // new segment with segment in parameter inserted
     // new segment ids for blocks
     // new segment mapped to segment parent
-    func insert(currentSegmentID: SegmentID, path: ArraySlice<SegmentID>, segment: Self, segmentID: SegmentID, segmentStartNumber: Number, previousBlockFingerprint: Digest) -> (Self, Mapping<Digest, SegmentID>, Mapping<SegmentID, SegmentID>) {
+    func insert(currentSegmentID: SegmentID, path: ArraySlice<SegmentID>, segment: Self, segmentID: SegmentID, previousBlockFingerprint: Digest) -> (Self, Mapping<Digest, SegmentID>, Mapping<SegmentID, SegmentID>) {
+        // adding to some descendent
         if let firstPath = path.first {
-            let childResult = childSegments.insert(firstPath: firstPath, path: path.dropFirst(), segment: segment, segmentID: segmentID, segmentStartNumber: segmentStartNumber, previousBlockFingerprint: previousBlockFingerprint)
+            let childResult = childSegments.insert(firstPath: firstPath, path: path.dropFirst(), segment: segment, segmentID: segmentID, previousBlockFingerprint: previousBlockFingerprint)
             let newChild = childResult.0
             let newChildren = childSegments.setting(key: firstPath, value: childResult.0)
             if newChild > self {
@@ -179,7 +219,7 @@ public extension Segment {
             }
             return (changing(childSegments: newChildren), childResult.1, childResult.2)
         }
-        let currentBlockHash = segment.blocks[segmentStartNumber]!.blockHash
+        let currentBlockHash = segment.blocks[segment.firstBlockNumber]!.blockHash
         // adding to end of segment
         if getLatestBlock().blockHash == previousBlockFingerprint {
             // adding to end of some chain
@@ -196,19 +236,16 @@ public extension Segment {
         }
         // adding to the middle of segment, must split segment
         let splitBlocks = blocks.elements().reduce((Mapping<Number, BlockRepresentationType>(), Mapping<Number, BlockRepresentationType>())) { result, entry in
-            if entry.0 >= segmentStartNumber {
+            if entry.0 >= segment.firstBlockNumber {
                 return (result.0, result.1.setting(key: entry.0, value: entry.1))
             }
             return (result.0.setting(key: entry.0, value: entry.1), result.1)
         }
-        let maxChildSegment = childSegments.values().max()!
-        let frontSegmentEndNumber = segmentStartNumber.advanced(by: -1)
-        let backSegmentEarliestParent = splitBlocks.1.values().filter { $0.earliestParent() != nil }.map { $0.earliestParent()! }.min()
-        let keepBackSegmentEarliest = maxChildSegment.earliestParent == earliestParent || earliestParent == backSegmentEarliestParent
-        let backSegment = keepBackSegmentEarliest ? changing(blocks: splitBlocks.1) : changing(blocks: splitBlocks.1).changing(earliestParent: backSegmentEarliestParent)
+        let frontSegmentEndNumber = segment.firstBlockNumber.advanced(by: -1)
+        let backSegment = changing(firstBlockNumber: segment.firstBlockNumber, blocks: splitBlocks.1).updateEarliestParent()
         let newBackSegmentID = SegmentID.random()
         let newChildSegments = Mapping<SegmentID, Self>().setting(key: newBackSegmentID, value: backSegment)
-        let frontSegment = changing(latestBlock: frontSegmentEndNumber, blocks: splitBlocks.0, childSegments: newChildSegments)
+        let frontSegment = changing(lastBlockNumber: frontSegmentEndNumber, blocks: splitBlocks.0, childSegments: newChildSegments)
         let segmentIDChanges = splitBlocks.1.values().reduce(Mapping<Digest, SegmentID>()) { result, entry in
             return result.setting(key: entry.blockHash, value: newBackSegmentID)
         }
@@ -217,7 +254,7 @@ public extension Segment {
     }
     
     static func createWithSingleBlock(block: BlockRepresentationType, blockNumber: Number) -> Self {
-        return Self(tipNumber: blockNumber, earliestParent: block.earliestParent(), latestBlock: blockNumber, latestBlockDifficultyTarget: block.nextDifficulty, blocks: Mapping<Number, BlockRepresentationType>().setting(key: blockNumber, value: block), childSegments: Mapping<SegmentID, Self>())
+        return Self(tipNumber: blockNumber, earliestParent: block.earliestParent(), lastBlockNumber: blockNumber, firstBlockNumber: blockNumber, latestBlockDifficultyTarget: block.nextDifficulty, blocks: Mapping<Number, BlockRepresentationType>().setting(key: blockNumber, value: block), childSegments: Mapping<SegmentID, Self>())
     }
     
     // segmentID is provided segmentID for segment in parameter
@@ -233,7 +270,7 @@ public extension Segment {
     
     func addToEnd(segment: Self) -> Self {
         let newEarliestParent = earliestParent == nil ? segment.earliestParent : (segment.earliestParent == nil ? earliestParent : min(segment.earliestParent!, earliestParent!))
-        return Self(tipNumber: segment.tipNumber, earliestParent: newEarliestParent, latestBlock: segment.latestBlock, latestBlockDifficultyTarget: segment.latestBlockDifficultyTarget, blocks: blocks.overwrite(with: segment.blocks), childSegments: segment.childSegments)
+        return Self(tipNumber: segment.tipNumber, earliestParent: newEarliestParent, lastBlockNumber: segment.lastBlockNumber, firstBlockNumber: firstBlockNumber, latestBlockDifficultyTarget: segment.latestBlockDifficultyTarget, blocks: blocks.overwrite(with: segment.blocks), childSegments: segment.childSegments)
     }
     
     func getParentConfirmationsAndTip() -> (Mapping<ChainName, Mapping<Digest, Mapping<Digest, Number>>>, Digest) {
@@ -257,12 +294,12 @@ public extension Segment {
 public extension Mapping where Value: Segment, Key == Value.SegmentID {
     func computeTip() -> Value.Digest? {
         guard let maxSegment = values().max() else { return nil }
-        if maxSegment.childSegments.isEmpty() { return maxSegment.blocks[maxSegment.latestBlock]?.blockHash }
+        if maxSegment.childSegments.isEmpty() { return maxSegment.blocks[maxSegment.lastBlockNumber]?.blockHash }
         return maxSegment.childSegments.computeTip()
     }
     
-    func insert(firstPath: Key, path: ArraySlice<Key>, segment: Value, segmentID: Key, segmentStartNumber: Value.Number, previousBlockFingerprint: Value.Digest) -> (Value, Mapping<Value.Digest, Key>, Mapping<Key, Key>) {
-        return self[firstPath]!.insert(currentSegmentID: firstPath, path: path, segment: segment, segmentID: segmentID, segmentStartNumber: segmentStartNumber, previousBlockFingerprint: previousBlockFingerprint)
+    func insert(firstPath: Key, path: ArraySlice<Key>, segment: Value, segmentID: Key, previousBlockFingerprint: Value.Digest) -> (Value, Mapping<Value.Digest, Key>, Mapping<Key, Key>) {
+        return self[firstPath]!.insert(currentSegmentID: firstPath, path: path, segment: segment, segmentID: segmentID, previousBlockFingerprint: previousBlockFingerprint)
     }
     
     func changeParentConfirmations(additions: Mapping<Value.Digest, Mapping<Value.Digest, Value.Number>>, removals: Mapping<Value.Digest, Mapping<Value.Digest, Value.Number>>, additionsTrie: TrieMapping<Value.SegmentID, [Value.Digest]>, removalsTrie: TrieMapping<Value.SegmentID, [Value.Digest]>, blockNumbers: Mapping<Value.Digest, Value.Number>) -> Self {
